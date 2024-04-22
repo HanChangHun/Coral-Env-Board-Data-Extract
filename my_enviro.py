@@ -24,13 +24,20 @@ import itertools
 import os
 import signal
 
-from pymongo import MongoClient
+import json
+import pymysql
 
-client = MongoClient("mongodb://210.107.198.214:27017/")
 
-db = client["HISL"]
-collection = db["env_board"]
-unique_identifier = {"device_id": "env_board_1"}
+with open("mysql_config.json", "r") as f:
+    db_config = json.load(f)
+
+db = pymysql.connect(
+    host=db_config['host'],
+    user=db_config['user'], 
+    db=db_config['db'],
+    password=db_config['password'],
+    charset='utf8'
+)
 
 BUTTON_PIN = 23
 DEFAULT_CONFIG_LOCATION = os.path.join(os.path.dirname(__file__), "cloud_config.ini")
@@ -56,6 +63,20 @@ def _none_to_nan(val):
 def button_callback(channel):
     global button_pressed
     button_pressed = not button_pressed
+
+def insert_with_retry(cursor, query, values):
+    while True:
+        try:
+            cursor.execute(query, values)
+            db.commit()
+            break
+        except pymysql.err.OperationalError as e:
+            print(f"Error: {e}. Retrying...")
+            db.ping(reconnect=True)
+            sleep(1)  # 1초 대기 후 재시도
+        except Exception as e:
+            print(f"Error: {e}. Retrying...")
+            sleep(1)  # 1초 대기 후 재시도
 
 
 def main():
@@ -88,6 +109,8 @@ def main():
 
     # Create instances of EnviroKit and Cloud IoT.
     enviro = EnviroBoard()
+    cursor = db.cursor()
+
     with CloudIot(args.cloud_config) as cloud:
         sensors = {}
         read_period = int(args.upload_delay / (2 * args.display_duration))
@@ -97,9 +120,20 @@ def main():
             sensors["temperature"] = enviro.temperature
             sensors["humidity"] = enviro.humidity
             
-            collection.update_one(
-                unique_identifier, {"$set": sensors}, upsert=True
-            )
+            query = """
+                INSERT INTO env_board (device_id, ambient_light, pressure, temperature, humidity)
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    ambient_light = VALUES(ambient_light),
+                    pressure = VALUES(pressure),
+                    temperature = VALUES(temperature),
+                    humidity = VALUES(humidity)
+            """
+
+            values = ('env_board_1', sensors["ambient_light"], sensors["pressure"], sensors["temperature"], sensors["humidity"])
+
+            insert_with_retry(cursor, query, values)
+            db.commit()
 
             if button_pressed:
                 # 조도와 기압 출력
@@ -116,6 +150,9 @@ def main():
                 cloud.publish_message(sensors)
 
             sleep(args.display_duration)
+            
+    db.close()
+    GPIO.cleanup()
 
 
 if __name__ == "__main__":
