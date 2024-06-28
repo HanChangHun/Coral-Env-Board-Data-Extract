@@ -35,7 +35,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
-with open("/home/pi/workspaces/env_board/mysql_config.json", "r") as f:
+with open("/home/pi/workspaces/Coral-Env-Board-Data-Extract/mysql_config.json", "r") as f:
     db_config = json.load(f)
 
 
